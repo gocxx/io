@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: gocxx_io
+Description: Go-style I/O interfaces and utilities for modern C++
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lgocxx_io
+Cflags: -I${includedir}

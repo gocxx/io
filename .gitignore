@@ -1,0 +1,27 @@
+# CMake
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/install/
+
+# Visual Studio
+*.vcxproj*
+*.sln
+*.user
+*.opensdf
+*.sdf
+*.suo
+
+# Binary files
+*.obj
+*.dll
+*.exe
+*.lib
+*.pdb
+*.idb
+*.log
+
+# Test output
+Testing/
