@@ -1,104 +1,192 @@
-
 #include <gtest/gtest.h>
-
-#include "gocxx/io/io.h"
-
-#include <iostream>
+#include <gocxx/io/io.h>
+#include <gocxx/io/io_errors.h>
+#include <gocxx/errors/errors.h>
+#include <memory>
+#include <string>
+#include <vector>
+#include <thread>
+#include <cstring>
 
 using namespace gocxx::io;
+using gocxx::base::Result;
+using gocxx::errors::Is;
+using gocxx::errors::Error;
 
-TEST(MemoryReaderWriterTest, BasicWriteAndRead) {
-    std::vector<uint8_t> inputData = { 'H', 'e', 'l', 'l', 'o' };
+class StringReader : public Reader {
+public:
+    explicit StringReader(const std::string& data) : data_(data), offset_(0) {}
 
-    MemoryWriter writer;
-    auto writeResult = writer.write(inputData.data(), inputData.size());
-
-    ASSERT_TRUE(writeResult.ok());
-    ASSERT_EQ(writeResult.bytesTransferred, inputData.size());
-
-    MemoryReader reader(writer.getData());
-    std::vector<uint8_t> outputBuffer(5);
-    auto readResult = reader.read(outputBuffer.data(), outputBuffer.size());
-
-    ASSERT_TRUE(readResult.ok());
-    ASSERT_EQ(readResult.bytesTransferred, 5);
-    EXPECT_EQ(outputBuffer, inputData);
-}
-
-TEST(MemoryReaderTest, EOFHandled) {
-    std::vector<uint8_t> data = { 'X' };
-    MemoryReader reader(data);
-    std::vector<uint8_t> buffer(2);
-
-    auto first = reader.read(buffer.data(), 1);
-    ASSERT_TRUE(first.ok());
-    ASSERT_EQ(first.bytesTransferred, 1);
-
-    auto second = reader.read(buffer.data(), 1);
-    ASSERT_TRUE(second.eof());
-    ASSERT_EQ(second.bytesTransferred, 0);
-}
-
-TEST(IOCopyTest, CopyFromMemoryToMemory) {
-    std::vector<uint8_t> input = { 'A', 'B', 'C', 'D' };
-    auto reader = std::make_unique<MemoryReader>(input);
-    auto writer = std::make_unique<MemoryWriter>();
-
-    auto result = Copy(std::move(writer), std::move(reader));
-    ASSERT_TRUE(result.ok());
-    ASSERT_EQ(result.bytesTransferred, input.size());
-}
-
-TEST(FileReaderWriterTest, WriteThenReadBack) {
-    std::string filename = "test_output.tmp";
-    std::vector<uint8_t> content = { '1', '2', '3', '4' };
-
-    {
-		FILE* file = std::fopen(filename.c_str(), "wb");
-        FileWriter writer(file);
-        auto result = writer.write(content.data(), content.size());
-		std::fclose(file);
-        ASSERT_TRUE(result.ok());
-        ASSERT_EQ(result.bytesTransferred, content.size());
+    Result<std::size_t> read(uint8_t* buffer, std::size_t size) override {
+        if (offset_ >= data_.size()) {
+            return { 0, ErrEOF };
+        }
+        std::size_t bytesToRead = std::min(size, data_.size() - offset_);
+        std::memcpy(buffer, data_.data() + offset_, bytesToRead);
+        offset_ += bytesToRead;
+        return bytesToRead;
     }
 
-    {
-        FILE* file = std::fopen(filename.c_str(), "rb");
-        FileReader reader(file);
-        std::vector<uint8_t> buffer(4);
-        auto result = reader.read(buffer.data(), buffer.size());
-        std::fclose(file);
-        ASSERT_TRUE(result.ok());
-        ASSERT_EQ(buffer, content);
+private:
+    std::string data_;
+    std::size_t offset_;
+};
+
+class VectorWriter : public Writer {
+public:
+    Result<std::size_t> write(const uint8_t* buffer, std::size_t size) override {
+        out.insert(out.end(), buffer, buffer + size);
+        return size;
     }
 
-    std::remove(filename.c_str());  
+    std::string str() const {
+        return std::string(out.begin(), out.end());
+    }
+
+    std::vector<uint8_t> out;
+};
+
+// ------------------- Tests -------------------
+
+TEST(IOTest, CopyCopiesAllData) {
+    auto reader = std::make_shared<StringReader>("Hello, gocxx IO!");
+    auto writer = std::make_shared<VectorWriter>();
+
+    auto res = Copy(writer, reader);
+    EXPECT_TRUE(res.Ok());
+    EXPECT_EQ(writer->str(), "Hello, gocxx IO!");
 }
 
-TEST(IStreamOStreamTest, WriteThenReadBack) {
-    std::stringstream stream;
+TEST(IOTest, CopyNStopsAfterNBytes) {
+    auto reader = std::make_shared<StringReader>("abcdefg");
+    auto writer = std::make_shared<VectorWriter>();
 
-    std::vector<uint8_t> originalData = { 'G', 'P', 'T', '-', '4' };
-
-    gocxx::io::OStreamWriter writer(stream);
-    auto writeResult = writer.write(originalData.data(), originalData.size());
-
-    ASSERT_TRUE(writeResult.ok());
-    ASSERT_EQ(writeResult.bytesTransferred, originalData.size());
-
-    stream.seekg(0);
-
-    std::vector<uint8_t> readData(originalData.size());
-    gocxx::io::IStreamReader reader(stream);
-    auto readResult = reader.read(readData.data(), readData.size());
-
-    ASSERT_TRUE(readResult.ok());
-    ASSERT_EQ(readResult.bytesTransferred, originalData.size());
-    ASSERT_EQ(readData, originalData);
+    auto res = CopyN(writer, reader, 4);
+    EXPECT_TRUE(res.Ok());
+    EXPECT_EQ(writer->str(), "abcd");
+    EXPECT_EQ(res.value, 4);
 }
 
+TEST(IOTest, ReadFullReadsExactlySize) {
+    auto reader = std::make_shared<StringReader>("12345678");
+    std::vector<uint8_t> buf(5);
 
-int main(int argc, char** argv) {
-    testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    auto res = ReadFull(reader, buf);
+    EXPECT_TRUE(res.Ok());
+    EXPECT_EQ(std::string(buf.begin(), buf.end()), "12345");
+}
+
+TEST(IOTest, ReadAllConcatenatesAllData) {
+    auto reader = std::make_shared<StringReader>("abcde12345xyz");
+    std::vector<uint8_t> buf;
+
+    auto res = ReadAll(reader, buf);
+
+    EXPECT_TRUE(res.Ok() || Is(res.err, ErrEOF));
+    EXPECT_EQ(std::string(buf.begin(), buf.end()), "abcde12345xyz");
+}
+
+TEST(IOTest, PipeTransfersData) {
+    auto [r, w] = Pipe();
+
+    std::thread writerThread([w] {
+        std::string msg = "pipe-data";
+        auto res = w->write(reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+        EXPECT_TRUE(res.Ok());
+        EXPECT_EQ(res.value, msg.size());
+        w->close();
+        });
+
+    std::vector<uint8_t> buf(128);
+    auto res = r->read(buf.data(), buf.size());
+    EXPECT_TRUE(res.Ok());
+    EXPECT_EQ(std::string(buf.begin(), buf.begin() + res.value), "pipe-data");
+
+    writerThread.join();
+}
+
+TEST(IOTest, LimitedReaderStopsAtLimit) {
+    auto baseReader = std::make_shared<StringReader>("HelloWorld");
+    LimitedReader limited(baseReader, 5);
+
+    std::vector<uint8_t> buf(10);
+    auto res = limited.read(buf.data(), buf.size());
+
+    EXPECT_TRUE(res.Ok());
+    EXPECT_EQ(res.value, 5);
+    EXPECT_EQ(std::string(buf.begin(), buf.begin() + res.value), "Hello");
+
+    auto eof = limited.read(buf.data(), buf.size());
+    EXPECT_FALSE(eof.Ok());
+    EXPECT_TRUE(Is(eof.err, ErrEOF));
+}
+
+TEST(IOTest, OffsetWriterSeeksAndWrites) {
+    class MemoryWriter : public WriterAt {
+    public:
+        std::vector<uint8_t> buffer = std::vector<uint8_t>(10, '.');
+
+        Result<std::size_t> writeAt(const uint8_t* data, std::size_t size, std::size_t offset) override {
+            if (offset + size > buffer.size()) buffer.resize(offset + size, '.');
+            std::copy(data, data + size, buffer.begin() + offset);
+            return size;
+        }
+    };
+
+    auto w = std::make_shared<MemoryWriter>();
+    OffsetWriter offsetWriter(w, 2);
+    std::string str = "abc";
+
+    offsetWriter.write(reinterpret_cast<const uint8_t*>(str.data()), str.size());
+
+    EXPECT_EQ(std::string(w->buffer.begin(), w->buffer.end()), "..abc.....");
+
+    auto seekRes = offsetWriter.seek(2, SeekCurrent);
+    EXPECT_TRUE(seekRes.Ok());
+
+    offsetWriter.write(reinterpret_cast<const uint8_t*>("X"), 1);
+    EXPECT_EQ(w->buffer[7], 'X');
+}
+
+TEST(IOTest, CopyNFailsOnEOF) {
+    auto reader = std::make_shared<StringReader>("abcd");
+    auto writer = std::make_shared<VectorWriter>();
+
+    auto res = CopyN(writer, reader, 10);  // Ask more than available
+
+    EXPECT_FALSE(res.Ok());
+    EXPECT_TRUE(Is(res.err, ErrUnexpectedEOF));
+    EXPECT_EQ(writer->str(), "abcd");
+    EXPECT_EQ(res.value, 4);
+}
+
+TEST(IOTest, ReadAtLeastFailsOnEOF) {
+    auto reader = std::make_shared<StringReader>("abc");
+    std::vector<uint8_t> buf(10); // Enough size, but input too small
+
+    auto res = ReadAtLeast(reader, buf, 5);
+    EXPECT_FALSE(res.Ok());
+    EXPECT_TRUE(Is(res.err, ErrUnexpectedEOF));
+    EXPECT_EQ(std::string(buf.begin(), buf.begin() + res.value), "abc");
+}
+
+TEST(IOTest, ReadAtLeastFailsOnSmallBuffer) {
+    auto reader = std::make_shared<StringReader>("123456");
+    std::vector<uint8_t> buf(3); // Too small for min = 5
+
+    auto res = ReadAtLeast(reader, buf, 5);
+    EXPECT_FALSE(res.Ok());
+    EXPECT_TRUE(Is(res.err, ErrBufferTooSmall));
+}
+
+TEST(IOTest, ReadFullFailsOnEOF) {
+    auto reader = std::make_shared<StringReader>("123");
+    std::vector<uint8_t> buf(5);  // Buffer larger than available data
+
+    auto res = ReadFull(reader, buf);
+
+    EXPECT_FALSE(res.Ok());
+    EXPECT_TRUE(Is(res.err, ErrUnexpectedEOF));
+    EXPECT_LT(res.value, buf.size());
+    EXPECT_EQ(std::string(buf.begin(), buf.begin() + res.value), "123");
 }

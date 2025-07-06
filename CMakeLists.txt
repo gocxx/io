@@ -1,10 +1,21 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(gocxx_io LANGUAGES CXX)
+project(gocxx_io  VERSION 0.0.1 LANGUAGES CXX)
+
+include(FetchContent)
+
+FetchContent_Declare(
+    gocxx_base
+    GIT_REPOSITORY https://github.com/gocxx/base.git
+    GIT_TAG        v0.0.1
+)
+
+FetchContent_MakeAvailable(gocxx_base)
 
 # Create the gocxx_io library
 add_library(gocxx_io
     include/gocxx/io/io.h
+    include/gocxx/io/io_errors.h
     src/io.cpp
 )
 
@@ -13,6 +24,11 @@ target_include_directories(gocxx_io
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(gocxx_io
+    PUBLIC
+        gocxx_base
 )
 
 # C++ standard & warnings
@@ -24,7 +40,7 @@ target_compile_options(gocxx_io PRIVATE
 
 # Installation (optional)
 install(TARGETS gocxx_io
-    EXPORT gocxx_ioTargets
+    # EXPORT gocxx_ioTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
@@ -42,31 +58,34 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/gocxx_io.pc
 
 install(DIRECTORY include/ DESTINATION include)
 
-install(EXPORT gocxx_ioTargets
-    FILE gocxx_ioTargets.cmake
-    NAMESPACE gocxx::
-    DESTINATION lib/cmake/gocxx_io
-)
+# install(EXPORT gocxx_ioTargets
+#     FILE gocxx_ioTargets.cmake
+#     NAMESPACE gocxx::
+#     DESTINATION lib/cmake/gocxx_io
+# )
 
-# Enable unit tests
-enable_testing()
+if(GOCXX_ENABLE_TESTS)
+    # Enable unit tests
+    enable_testing()
 
-include(FetchContent)
+    include(FetchContent)
 
-FetchContent_Declare(
-  googletest
-  URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-)
+    FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.zip
+    )
 
-# Prevent gmock/gtest from building shared libraries
-set(BUILD_GMOCK ON)
-set(BUILD_GTEST ON)
-set(INSTALL_GTEST OFF)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    # Prevent gmock/gtest from building shared libraries
+    set(BUILD_GMOCK ON)
+    set(BUILD_GTEST ON)
+    set(INSTALL_GTEST OFF)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(googletest)
+    FetchContent_MakeAvailable(googletest)
 
-# Build test binary
-add_executable(gocxx_io_test tests/io_test.cpp)
-target_link_libraries(gocxx_io_test PRIVATE gocxx_io gmock_main)
-add_test(NAME gocxx_io_test COMMAND gocxx_io_test)
+    # Build test binary
+    add_executable(gocxx_io_test tests/io_test.cpp)
+    target_link_libraries(gocxx_io_test PRIVATE gocxx_io gmock_main)
+    add_test(NAME gocxx_io_test COMMAND gocxx_io_test)
+
+endif()

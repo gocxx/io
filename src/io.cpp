@@ -1,156 +1,331 @@
 #include "gocxx/io/io.h"
+#include "gocxx/io/io_errors.h"
+
 #include <memory>
-#include <vector>
+#include <mutex>
+#include <deque>
 
 namespace gocxx::io {
 
-    IOResult Copy(std::shared_ptr<Writer> dest, std::shared_ptr<Reader> source) {
-        constexpr std::size_t bufferSize = 8192;
-        std::vector<uint8_t> buffer(bufferSize);
 
+    using gocxx::errors::Error;
+    using gocxx::base::Result;
+
+    Result<std::size_t> Copy(std::shared_ptr<Writer> dest, std::shared_ptr<Reader> source) {
+        constexpr std::size_t bufferSize = 8192;
+        std::unique_ptr<uint8_t[]> buffer(new uint8_t[bufferSize]);
         std::size_t totalBytes = 0;
 
         while (true) {
-            IOResult readResult = source->read(buffer.data(), bufferSize);
+            auto res = source->read(buffer.get(), bufferSize);
+            if (!res.Ok()) {
+                if (errors::Is(res.err, ErrEOF)) break;
+                return Result<std::size_t>{ totalBytes, res.err };
+            }
 
-            if (!readResult.ok()) {
-                if (readResult.eof()) {
-                    break;
+            if (res.value > 0) {
+                auto wres = dest->write(buffer.get(), res.value);
+                if (!wres.Ok()) return { totalBytes, wres.err };
+                totalBytes += wres.value;
+            }
+        }
+
+        return {totalBytes,nullptr};
+    }
+
+    Result<std::size_t> CopyBuffer(std::shared_ptr<Writer> dst, std::shared_ptr<Reader> src, uint8_t* buf, std::size_t size) {
+        if (!buf || size == 0) {
+            return { 0, ErrUnknownIO };
+        }
+
+        std::size_t total = 0;
+        while (true) {
+            auto rres = src->read(buf, size);
+            if (rres.value > 0) {
+                auto wres = dst->write(buf, rres.value);
+                if (!wres.Ok()) return { total, wres.err };
+                total += wres.value;
+            }
+            if (!rres.Ok()) return { total, rres.err };
+        }
+		return { total, nullptr };
+    }
+
+    Result<std::size_t> CopyN(std::shared_ptr<Writer> dst, std::shared_ptr<Reader> src, std::size_t n) {
+        std::vector<uint8_t> buf(4096);
+        std::size_t total = 0;
+
+        while (total < n) {
+            std::size_t toRead = std::min(buf.size(), n - total);
+            auto rres = src->read(buf.data(), toRead);
+
+            if (rres.value > 0) {
+                auto wres = dst->write(buf.data(), rres.value);
+                if (!wres.Ok()) return { total, wres.err };
+                total += wres.value;
+            }
+
+            if (!rres.Ok()) {
+                if (errors::Is(rres.err, ErrEOF)) {
+                    return { total, errors::Cause(ErrUnexpectedEOF,rres.err)};
                 }
-                return { totalBytes, readResult.error, readResult.message };
+                return { total, rres.err };
+            }
+        }
+
+        return total;
+    }
+
+    Result<std::size_t> ReadAll(std::shared_ptr<Reader> r, std::vector<uint8_t>& out) {
+        std::vector<uint8_t> buf(4096);
+        std::size_t totalRead = 0;
+
+        while (true) {
+            auto res = r->read(buf.data(), buf.size());
+            if (res.value > 0) {
+                out.insert(out.end(), buf.begin(), buf.begin() + res.value);
+                totalRead += res.value;
+            }
+            if (!res.Ok()) {
+                if (errors::Is(res.err, ErrEOF)) return totalRead;
+                return { totalRead, res.err };
+            }
+        }
+		return { totalRead, nullptr };
+    }
+
+    Result<std::size_t> ReadAtLeast(std::shared_ptr<Reader> r, std::vector<uint8_t>& buf, std::size_t min) {
+        std::size_t total = 0;
+        if (buf.size() < min) {
+            return { 0, ErrBufferTooSmall };
+        }
+
+        while (total < min) {
+            auto res = r->read(buf.data() + total, buf.size() - total);
+            if (res.value > 0) total += res.value;
+
+            if (!res.Ok()) {
+                if (errors::Is(res.err, ErrEOF)) {
+                    return { total, errors::Cause(ErrUnexpectedEOF,res.err)};
+                }
+                return { total, res.err };
+            }
+        }
+
+        return total;
+    }
+
+    Result<std::size_t> ReadFull(std::shared_ptr<Reader> r, std::vector<uint8_t>& buf) {
+        std::size_t total = 0;
+        std::size_t size = buf.size();
+
+        if (size == 0) return { 0 };
+
+        while (total < size) {
+            auto res = r->read(buf.data() + total, size - total);
+            if (!res.Ok()) {
+                return { total, errors::Cause(ErrUnexpectedEOF,res.err)};
             }
 
-            std::size_t bytesRead = readResult.bytesTransferred;
+            total += res.value;
+            if (res.value == 0) return { total, ErrUnexpectedEOF };
+        }
 
-            IOResult writeResult = dest->write(buffer.data(), bytesRead);
-            if (!writeResult.ok()) {
-                return { totalBytes, writeResult.error, writeResult.message };
+        return total;
+    }
+
+
+    Result<std::size_t> WriteString(std::shared_ptr<Writer> w, const std::string& s) {
+        if (s.empty()) return { 0 };
+        return w->write(reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    }
+
+    LimitedReader::LimitedReader(std::shared_ptr<Reader> r, std::size_t n) : r(r), remaining(n) {}
+
+
+    gocxx::base::Result<std::size_t> LimitedReader::read(uint8_t* buffer, std::size_t size) {
+            if (!buffer) {
+                return { 0, errors::New("LimitedReader: null buffer") };
             }
 
-            totalBytes += writeResult.bytesTransferred;
-        }
-
-        return { totalBytes, IOError::None };
-    }
-
-     // --- MemoryReader ---
-
-    MemoryReader::MemoryReader(const std::vector<uint8_t>& d)
-        : data(d) {}
-
-    IOResult MemoryReader::read(uint8_t* buffer, std::size_t size) {
-        if (pos >= data.size()) {
-            return {0, IOError::EOFReached};
-        }
-
-        std::size_t remaining = data.size() - pos;
-        std::size_t toRead = std::min(size, remaining);
-
-        std::memcpy(buffer, data.data() + pos, toRead);
-        pos += toRead;
-
-        return {toRead, IOError::None};
-    }
-
-    // --- MemoryWriter ---
-
-    MemoryWriter::MemoryWriter() = default;
-
-    IOResult MemoryWriter::write(const uint8_t* buffer, std::size_t size) {
-        if (!buffer || size == 0) {
-            return {0, IOError::Unknown,"buffer pointer is null / zero buffer"};
-        }
-
-        data.insert(data.end(), buffer, buffer + size);
-        return {size, IOError::None};
-    }
-
-    const std::vector<uint8_t>& MemoryWriter::getData() const {
-        return data;
-    }
-
-    // --- FileReader ---
-
-    FileReader::FileReader(FILE* file) {
-        this->file = file;
-    }
-
-
-    IOResult FileReader::read(uint8_t* buffer, std::size_t size) {
-        if (!file || !buffer || size == 0) {
-            return {0, IOError::ReadError};
-        }
-
-        std::size_t bytes = std::fread(buffer, 1, size, file);
-        if (bytes == 0) {
-            if (std::feof(file)) {
-                return {0, IOError::EOFReached};
+            if (remaining == 0) {
+                return { 0, ErrEOF };  // limit reached
             }
-            return {0, IOError::ReadError};
+
+            std::size_t toRead = std::min(size, remaining);
+            gocxx::base::Result<std::size_t> res = r->read(buffer, toRead);
+
+            if (!res.Ok()) {
+                return res;
+            }
+
+            if (res.value > 0) {
+                remaining -= res.value;
+                totalRead += res.value;
+            }
+
+            return res;
         }
 
-        return {bytes, IOError::None};
-    }
+        // --- OffsetWriter ---
 
-    // --- FileWriter ---
-
-    FileWriter::FileWriter(FILE* file) {
-		this->file = file;
-    }
-
-    IOResult FileWriter::write(const uint8_t* buffer, std::size_t size) {
-        if (!file || !buffer || size == 0) {
-            return {0, IOError::WriteError};
+        OffsetWriter::OffsetWriter(std::shared_ptr<WriterAt> w, std::size_t offset)
+            : w(std::move(w)), base(offset), currentOffset(offset) {
         }
 
-        std::size_t written = std::fwrite(buffer, 1, size, file);
-        if (written != size) {
-            return {written, IOError::WriteError};
+        gocxx::base::Result<std::size_t> OffsetWriter::writeAt(const uint8_t* buffer, std::size_t size, std::size_t offset) {
+            if (!w) {
+                return { 0, errors::New("OffsetWriter: null WriterAt") };
+            }
+            return w->writeAt(buffer, size, offset);
         }
 
-        return {written, IOError::None};
-    }
+        gocxx::base::Result<std::size_t> OffsetWriter::write(const uint8_t* buffer, std::size_t size) {
+            if (!w) {
+                return { 0, errors::New("OffsetWriter: null WriterAt") };
+            }
 
-	// --- IStreamReader ---
-
-    IStreamReader::IStreamReader(std::istream& inStream)
-        : in(inStream) {
-    }
-
-    IOResult IStreamReader::read(uint8_t* buffer, std::size_t size) {
-        if (!buffer || size == 0) {
-            return { 0, IOError::ReadError, "Invalid buffer or size" };
+            gocxx::base::Result<std::size_t> res = w->writeAt(buffer, size, currentOffset);
+            if (res.Ok() && res.value > 0) {
+                currentOffset += res.value;
+            }
+            return res;
         }
 
-        in.read(reinterpret_cast<char*>(buffer), size);
-        std::size_t bytesRead = static_cast<std::size_t>(in.gcount());
+        gocxx::base::Result<std::size_t> OffsetWriter::seek(std::size_t offset, whence whence) {
+            std::size_t newOffset = 0;
 
-        if (in.bad()) {
-            return { bytesRead, IOError::ReadError, "Stream read failed" };
-        }
-        else if (in.eof()) {
-            return { bytesRead, IOError::EOFReached };
-        }
+            switch (whence) {
+            case whence::SeekStart:
+                newOffset = base + offset;
+                break;
+            case whence::SeekCurrent:
+                newOffset = currentOffset + offset;
+                break;
+            case whence::SeekEnd:
+                return { 0, errors::New("OffsetWriter: SeekEnd not supported") };
+            default:
+                return { 0, errors::New("OffsetWriter: Invalid seek origin") };
+            }
 
-        return { bytesRead, IOError::None };
-    }
+            if (newOffset < base) {
+                return { 0, errors::New("OffsetWriter: Seek before base not allowed") };
+            }
 
-    OStreamWriter::OStreamWriter(std::ostream& outStream)
-        : out(outStream) {
-    }
-
-    IOResult OStreamWriter::write(const uint8_t* buffer, std::size_t size) {
-        if (!buffer || size == 0) {
-            return { 0, IOError::WriteError, "Invalid buffer or size" };
-        }
-
-        out.write(reinterpret_cast<const char*>(buffer), size);
-
-        if (!out) {
-            return { 0, IOError::WriteError, "Stream write failed" };
+            currentOffset = newOffset;
+            return { newOffset - base }; // relative offset
         }
 
-        return { size, IOError::None };
-    }
+        // --- SharedPipe ---
 
-} // namespace io
+        class SharedPipe {
+        public:
+            std::mutex mtx;
+            std::condition_variable cv;
+
+            std::deque<uint8_t> buffer;
+            bool closed = false;
+            std::shared_ptr<errors::Error> closeError = nullptr;
+
+            gocxx::base::Result<std::size_t> write(const uint8_t* data, std::size_t size) {
+                if (!data) return { 0, errors::New("Pipe write: null buffer") };
+
+                std::unique_lock lock(mtx);
+                if (closed) {
+                    return { 0, errors::New("Pipe write: closed") };
+                }
+
+                buffer.insert(buffer.end(), data, data + size);
+                cv.notify_all();
+                return { size };
+            }
+
+            gocxx::base::Result<std::size_t> read(uint8_t* out, std::size_t size) {
+                if (!out) return { 0, errors::New("Pipe read: null buffer") };
+
+                std::unique_lock lock(mtx);
+                while (buffer.empty() && !closed) {
+                    cv.wait(lock);
+                }
+
+                std::size_t n = 0;
+                while (!buffer.empty() && n < size) {
+                    out[n++] = buffer.front();
+                    buffer.pop_front();
+                }
+
+                if (n > 0) return { n };
+
+                if (closed) {
+                    return { 0, closeError ? closeError : ErrEOF };
+                }
+
+                return { 0, errors::New("Pipe read: unknown error state") };
+            }
+
+            gocxx::base::Result<std::size_t> close(const std::shared_ptr<errors::Error>& err) {
+                std::unique_lock lock(mtx);
+                if (!closed) {
+                    closed = true;
+                    closeError = err;
+                    cv.notify_all();
+                }
+                return { 0 };
+            }
+        };
+
+        // --- PipeReaderImpl ---
+
+        class PipeReaderImpl : public PipeReader {
+        public:
+            explicit PipeReaderImpl(std::shared_ptr<SharedPipe> pipe) : pipe_(std::move(pipe)) {}
+
+            gocxx::base::Result<std::size_t> read(uint8_t* buffer, std::size_t size) override {
+                return pipe_->read(buffer, size);
+            }
+
+            gocxx::base::Result<std::size_t> close() override {
+                return pipe_->close(nullptr);
+            }
+
+            gocxx::base::Result<std::size_t> closeWithError(std::shared_ptr<errors::Error> err) override {
+                return pipe_->close(std::move(err));
+            }
+
+        private:
+            std::shared_ptr<SharedPipe> pipe_;
+        };
+
+        // --- PipeWriterImpl ---
+
+        class PipeWriterImpl : public PipeWriter {
+        public:
+            explicit PipeWriterImpl(std::shared_ptr<SharedPipe> pipe) : pipe_(std::move(pipe)) {}
+
+            gocxx::base::Result<std::size_t> write(const uint8_t* buffer, std::size_t size) override {
+                return pipe_->write(buffer, size);
+            }
+
+            gocxx::base::Result<std::size_t> close() override {
+                return pipe_->close(nullptr);
+            }
+
+            gocxx::base::Result<std::size_t> closeWithError(std::shared_ptr<errors::Error> err) override {
+                return pipe_->close(std::move(err));
+            }
+
+        private:
+            std::shared_ptr<SharedPipe> pipe_;
+        };
+
+        // --- Pipe creation ---
+
+        std::pair<std::shared_ptr<PipeReader>, std::shared_ptr<PipeWriter>> Pipe() {
+            auto pipe = std::make_shared<SharedPipe>();
+            return {
+                std::make_shared<PipeReaderImpl>(pipe),
+                std::make_shared<PipeWriterImpl>(pipe)
+            };
+        }
+
+    } // namespace gocxx::io
