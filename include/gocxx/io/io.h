@@ -20,11 +20,11 @@ namespace gocxx::io {
         virtual ~Reader() = default;
 
         // Reads up to `size` bytes into `buffer`.
-        // Returns the number of bytes read (0 = EOF).
-        virtual gocxx::base::Result<std::size_t> read(uint8_t* buffer, std::size_t size) = 0;
+        // Returns the number of bytes Read (0 = EOF).
+        virtual gocxx::base::Result<std::size_t> Read(uint8_t* buffer, std::size_t size) = 0;
 
-        gocxx::base::Result<std::size_t> read(std::vector<uint8_t>& buffer) {
-            return read(buffer.data(), buffer.size());
+        gocxx::base::Result<std::size_t> Read(std::vector<uint8_t>& buffer) {
+            return Read(buffer.data(), buffer.size());
         }
     };
 
@@ -35,10 +35,10 @@ namespace gocxx::io {
 
         // Writes `size` bytes from `buffer`.
         // Returns the number of bytes written (0 = error).
-        virtual gocxx::base::Result<std::size_t> write(const uint8_t* buffer, std::size_t size) = 0;
+        virtual gocxx::base::Result<std::size_t> Write(const uint8_t* buffer, std::size_t size) = 0;
 
-        gocxx::base::Result<std::size_t> write(const std::vector<uint8_t>& buffer) {
-            return write(buffer.data(), buffer.size());
+        gocxx::base::Result<std::size_t> Write(const std::vector<uint8_t>& buffer) {
+            return Write(buffer.data(), buffer.size());
         }
     };
 
@@ -54,13 +54,13 @@ namespace gocxx::io {
     class ReaderAt {
     public:
         virtual ~ReaderAt() = default;
-        virtual gocxx::base::Result<std::size_t> readAt(uint8_t* buffer, std::size_t size, std::size_t offset) = 0;
+        virtual gocxx::base::Result<std::size_t> ReadAt(uint8_t* buffer, std::size_t size, std::size_t offset) = 0;
     };
 
     class WriterAt {
     public:
         virtual ~WriterAt() = default;
-        virtual gocxx::base::Result<std::size_t> writeAt(const uint8_t* buffer, std::size_t size, std::size_t offset) = 0;
+        virtual gocxx::base::Result<std::size_t> WriteAt(const uint8_t* buffer, std::size_t size, std::size_t offset) = 0;
     };
 
     enum whence {
@@ -72,15 +72,15 @@ namespace gocxx::io {
     class Seeker {
     public:
         virtual ~Seeker() = default;
-        virtual gocxx::base::Result<std::size_t> seek(std::size_t offset, whence whence) = 0;
+        virtual gocxx::base::Result<std::size_t> Seek(std::size_t offset, whence whence) = 0;
     };
 
     class OffsetWriter : public Writer, public WriterAt, public Seeker {
     public:
         explicit OffsetWriter(std::shared_ptr<WriterAt> w, std::size_t offset);
-        gocxx::base::Result<std::size_t> writeAt(const uint8_t* buffer, std::size_t size, std::size_t offset) override;
-        gocxx::base::Result<std::size_t> write(const uint8_t* buffer, std::size_t size) override;
-        gocxx::base::Result<std::size_t> seek(std::size_t offset, whence whence) override;
+        gocxx::base::Result<std::size_t> WriteAt(const uint8_t* buffer, std::size_t size, std::size_t offset) override;
+        gocxx::base::Result<std::size_t> Write(const uint8_t* buffer, std::size_t size) override;
+        gocxx::base::Result<std::size_t> Seek(std::size_t offset, whence whence) override;
 
     private:
         std::shared_ptr<WriterAt> w;
@@ -91,25 +91,25 @@ namespace gocxx::io {
     class ByteReader {
     public:
         virtual ~ByteReader() = default;
-        virtual gocxx::base::Result<std::size_t> readByte(uint8_t& outByte) = 0;
+        virtual gocxx::base::Result<std::size_t> ReadByte(uint8_t& outByte) = 0;
     };
 
     class ByteWriter {
     public:
         virtual ~ByteWriter() = default;
-        virtual gocxx::base::Result<std::size_t> writeByte(uint8_t byte) = 0;
+        virtual gocxx::base::Result<std::size_t> WriteByte(uint8_t byte) = 0;
     };
 
     class PipeReader : public Reader {
     public:
-        virtual gocxx::base::Result<std::size_t> close() = 0;
-        virtual gocxx::base::Result<std::size_t> closeWithError(std::shared_ptr<gocxx::errors::Error> err) = 0;
+        virtual gocxx::base::Result<std::size_t> Close() = 0;
+        virtual gocxx::base::Result<std::size_t> CloseWithError(std::shared_ptr<gocxx::errors::Error> err) = 0;
     };
 
     class PipeWriter : public Writer {
     public:
-        virtual gocxx::base::Result<std::size_t> close() = 0;
-        virtual gocxx::base::Result<std::size_t> closeWithError(std::shared_ptr<gocxx::errors::Error> err) = 0;
+        virtual gocxx::base::Result<std::size_t> Close() = 0;
+        virtual gocxx::base::Result<std::size_t> CloseWithError(std::shared_ptr<gocxx::errors::Error> err) = 0;
     };
 
     // Function declarations
@@ -124,7 +124,7 @@ namespace gocxx::io {
     class LimitedReader : public Reader {
     public:
         LimitedReader(std::shared_ptr<Reader> base, std::size_t n);
-        gocxx::base::Result<std::size_t> read(uint8_t* buffer, std::size_t size) override;
+        gocxx::base::Result<std::size_t> Read(uint8_t* buffer, std::size_t size) override;
 
     private:
         std::shared_ptr<Reader> r;

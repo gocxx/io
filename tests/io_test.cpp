@@ -17,7 +17,7 @@ class StringReader : public Reader {
 public:
     explicit StringReader(const std::string& data) : data_(data), offset_(0) {}
 
-    Result<std::size_t> read(uint8_t* buffer, std::size_t size) override {
+    Result<std::size_t> Read(uint8_t* buffer, std::size_t size) override {
         if (offset_ >= data_.size()) {
             return { 0, ErrEOF };
         }
@@ -34,7 +34,7 @@ private:
 
 class VectorWriter : public Writer {
 public:
-    Result<std::size_t> write(const uint8_t* buffer, std::size_t size) override {
+    Result<std::size_t> Write(const uint8_t* buffer, std::size_t size) override {
         out.insert(out.end(), buffer, buffer + size);
         return size;
     }
@@ -91,14 +91,14 @@ TEST(IOTest, PipeTransfersData) {
 
     std::thread writerThread([w] {
         std::string msg = "pipe-data";
-        auto res = w->write(reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+        auto res = w->Write(reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
         EXPECT_TRUE(res.Ok());
         EXPECT_EQ(res.value, msg.size());
-        w->close();
+        w->Close();
         });
 
     std::vector<uint8_t> buf(128);
-    auto res = r->read(buf.data(), buf.size());
+    auto res = r->Read(buf.data(), buf.size());
     EXPECT_TRUE(res.Ok());
     EXPECT_EQ(std::string(buf.begin(), buf.begin() + res.value), "pipe-data");
 
@@ -110,13 +110,13 @@ TEST(IOTest, LimitedReaderStopsAtLimit) {
     LimitedReader limited(baseReader, 5);
 
     std::vector<uint8_t> buf(10);
-    auto res = limited.read(buf.data(), buf.size());
+    auto res = limited.Read(buf.data(), buf.size());
 
     EXPECT_TRUE(res.Ok());
     EXPECT_EQ(res.value, 5);
     EXPECT_EQ(std::string(buf.begin(), buf.begin() + res.value), "Hello");
 
-    auto eof = limited.read(buf.data(), buf.size());
+    auto eof = limited.Read(buf.data(), buf.size());
     EXPECT_FALSE(eof.Ok());
     EXPECT_TRUE(Is(eof.err, ErrEOF));
 }
@@ -126,7 +126,7 @@ TEST(IOTest, OffsetWriterSeeksAndWrites) {
     public:
         std::vector<uint8_t> buffer = std::vector<uint8_t>(10, '.');
 
-        Result<std::size_t> writeAt(const uint8_t* data, std::size_t size, std::size_t offset) override {
+        Result<std::size_t> WriteAt(const uint8_t* data, std::size_t size, std::size_t offset) override {
             if (offset + size > buffer.size()) buffer.resize(offset + size, '.');
             std::copy(data, data + size, buffer.begin() + offset);
             return size;
@@ -137,14 +137,14 @@ TEST(IOTest, OffsetWriterSeeksAndWrites) {
     OffsetWriter offsetWriter(w, 2);
     std::string str = "abc";
 
-    offsetWriter.write(reinterpret_cast<const uint8_t*>(str.data()), str.size());
+    offsetWriter.Write(reinterpret_cast<const uint8_t*>(str.data()), str.size());
 
     EXPECT_EQ(std::string(w->buffer.begin(), w->buffer.end()), "..abc.....");
 
-    auto seekRes = offsetWriter.seek(2, SeekCurrent);
+    auto seekRes = offsetWriter.Seek(2, SeekCurrent);
     EXPECT_TRUE(seekRes.Ok());
 
-    offsetWriter.write(reinterpret_cast<const uint8_t*>("X"), 1);
+    offsetWriter.Write(reinterpret_cast<const uint8_t*>("X"), 1);
     EXPECT_EQ(w->buffer[7], 'X');
 }
 
